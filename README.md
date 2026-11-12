@@ -1,39 +1,30 @@
 # Roblox Up-and-Coming forecast
 
-`main.py` (Python 3.13, standard library only) reads the Up-and-Coming chart
-history in `$MAKEFUN_INPUT_DIR` (else `/input`) and writes one forecast to
-`$MAKEFUN_OUTPUT_DIR/forecast.json` (else `/output/forecast.json`): for each
-of the top 10 places, a probability for each candidate game, plus a top-10
-guess. Deterministic: the same history always yields the same bytes.
+`main.py` reads chart history from `$MAKEFUN_INPUT_DIR` (default `/input`)
+and writes `$MAKEFUN_OUTPUT_DIR/forecast.json` (default `/output/forecast.json`).
+The output contains probabilities for places 1–10 and a ten-game selection.
+The program uses only the Python standard library and produces deterministic
+output for the same input history.
 
-## How it forecasts
+## Forecast method
 
-The chart's top-10 set is fairly stable but the order inside it shuffles
-hard, so betting everything on the chart standing still loses. The program
-blends two rank-distribution models:
+The forecast blends a Gaussian place model and a Monte Carlo rank model,
+then assigns 25% of the final probability to a recency-weighted
+place-occupancy table. The Gaussian and Monte Carlo components contribute
+70% and 30% of the remaining 75%, respectively.
 
-- **Gaussian place model (70%).** Each candidate game gets a forecast rank
-  (its last rank, pulled 30% toward the rank its player count implies) and
-  a spread that grows with the forecast horizon and its recent rank range.
-  Place weights are the normal densities, normalised per place, leaving
-  30% unnamed for games that enter the chart during the window.
-- **Monte Carlo rank model (30%).** Each candidate's latent strength starts
-  at minus its last rank and takes Gaussian steps every 3 hours over the
-  72-hour window; the fraction of steps each game spends at each place is
-  its probability. Seeded, so it is reproducible.
+The Gaussian component uses a candidate's latest rank, its player count,
+and recent rank variation to distribute probability over places. The
+Monte Carlo component simulates rank changes in three-hour steps using a
+fixed random seed. Games that age out of the chart lose weight over the
+forecast window when their creation date is available.
 
-Games that age out of the chart (published more than 28 days before a
-window hour) lose weight in proportion to the window they miss, using the
-`created` date from the history's details when present.
-
-## Practice result
-
-On the kit's practice instance (history to 2026-11-07T23:00Z, 10 reads in
-the window after it) the forecast scores **-34.20** log score (typical
-0.033 per place, 6.4 top-10 hits) against the house persistence baseline's
-**-43.51** — about 9.3 nats better. Rolling backtests on earlier 72-hour
-windows of the same archive average about -39.2 against the baseline's
--50.1.
+The occupancy component draws candidates from the latest chart's top 60
+and the top 30 of each of the last eight reads. For each place it counts
+historical top-ten occupants, halving a read's weight for every 24 hours
+of age. A small pseudocount smooths each candidate's place probability.
+No probability is reserved for unnamed games: held-out windows showed an
+approximately 3.5% rate of previously unseen top-ten occupants.
 
 ## Run
 
