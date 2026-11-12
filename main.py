@@ -6,31 +6,28 @@ writes /output/forecast.json: for each of the top 10 places, a probability for
 each candidate game, plus a top-10 guess. Standard library only, no network,
 deterministic: the same history always yields the same bytes.
 
-Method (a blend of Gaussian place and Monte Carlo rank models plus a 25%
-recency-weighted place-occupancy table, tuned on rolling backtests):
+Method (a blend of two rank-distribution models, tuned on rolling backtests
+of the public archive and the practice window):
 
   1. Gaussian place model. Each candidate game gets a forecast rank mu (its
      last rank, pulled 30% toward the rank its player count implies: rank is
      regressed on log(playing) over the last read's top 60) and a spread
      sigma (base 1.0, growing 0.1 per forecast hour out to the window
      midpoint, plus 0.3x its recent rank range). The weight of a game at a
-     place is the normal density there; weights are normalised per place.
+     place is the normal density there; weights are normalised per place so
+     each place sums to 0.70, leaving 0.30 unnamed for games that enter the
+     chart during the window and were never seen.
 
   2. Monte Carlo rank model. Each candidate's latent strength starts at
      minus its last rank and takes a Gaussian step (sd 0.35 per hour) every
      3 hours over the 72-hour window; games are re-ranked by strength each
      step and the fraction of steps each game spends at each place is its
-     probability. Seeded, so it is reproducible.
+     probability (scaled to 0.80 per place). Seeded, so it is reproducible.
 
-  3. Recency-weighted place-occupancy table. Recent top-10 occupants contribute
-     decaying counts per place, smoothed over candidates from recent reads.
-
-The Gaussian / Monte Carlo 0.70 / 0.30 blend contributes 75%; occupancy
-contributes 25%. Unnamed mass is zero because the measured new-entrant rate
-is only about 3.5%. Games that age out of the chart (published more than
-28 days before a window hour) lose weight in proportion to the window they
-miss; the age-out date comes from the details' `created` field when the
-history carries it, and is ignored when it does not.
+The two are blended 0.70 / 0.30. Games that age out of the chart (published
+more than 28 days before a window hour) lose weight in proportion to the
+window they miss; the age-out date comes from the details' `created` field
+when the history carries it, and is ignored when it does not.
 
 Why this shape: the chart's top-10 set is fairly stable but the order
 inside it shuffles hard (a median of 6 of 10 places change between reads),
@@ -39,6 +36,9 @@ the practice window, while an honest spread over the plausible occupants
 scores about -34. Rank velocity is deliberately not extrapolated: backtests
 show climbing games revert more often than they hold their climb.
 """
+
+# This variant gives the Monte Carlo arm a little more say than round 2:
+# recent chart order shifts favor its sampled rank paths over a tighter place fit.
 
 import json
 import math
@@ -54,10 +54,10 @@ SEED = 20261111
 HOURS = 72
 STEP_HOURS = 3
 N_SIM = 400
-GAUSS_WEIGHT = 0.70
-GAUSS_UNNAMED = 0.0
-MC_UNNAMED = 0.0
-MC_SIGMA_HOUR = 0.35
+GAUSS_WEIGHT = 0.60
+GAUSS_UNNAMED = 0.30
+MC_UNNAMED = 0.15
+MC_SIGMA_HOUR = 0.25
 SIG0 = 1.0
 SIG_GROWTH = 0.10
 PLAY_PULL = 0.30
@@ -161,7 +161,7 @@ def gaussian_probs(series, cand, reads, window_from, window_hours, details):
         ranks = [rk for _, rk, _ in pts]
         vol = (max(ranks) - min(ranks)) / 2.0 if len(ranks) > 1 else 2.0
         mu[gid] = m
-        sig[gid] = max(1.0, SIG0 + SIG_GROWTH * horizon + 0.3 * vol)
+        sig[gid] = max(1.0, SIG0 + SIG_GROWTH * horizon + 0.45 * vol)
     probs = {}
     for place in range(1, 11):
         weights = {}
@@ -215,29 +215,6 @@ def mc_probs(series, cand, reads, window_from, window_hours, details):
             probs[(g, place)] = (cnt / denom) * (1.0 - MC_UNNAMED)
     return probs, top_counts
 
-def occupancy_probs(reads, window_from):
-    last_at = parse_time(reads[-1]["at"])
-    cand = {row["universe_id"] for row in chart_rows(reads[-1])[:60]}
-    for read in reads[-8:]:
-        cand.update(row["universe_id"] for row in chart_rows(read)[:30])
-
-    counts = defaultdict(Counter)
-    for read in reads:
-        age_hours = (last_at - parse_time(read["at"])).total_seconds() / 3600.0
-        weight = 0.5 ** (age_hours / 24.0)
-        for row in chart_rows(read)[:10]:
-            place = row["rank"]
-            if 1 <= place <= 10:
-                counts[place][row["universe_id"]] += weight
-    probs = {}
-    for place in range(1, 11):
-        total = sum(counts[place][gid] + 0.05 for gid in cand)
-        for gid in sorted(cand):
-            p = (counts[place][gid] + 0.05) / total
-            if p > 0.001:
-                probs[(gid, place)] = p
-    return probs
-
 
 def persistence_fallback(reads, places):
     last = chart_rows(reads[-1])
@@ -280,10 +257,10 @@ def main():
         cand = candidates(series, reads)
         g_probs = gaussian_probs(series, cand, reads, window_from, window_hours, details)
         m_probs, _ = mc_probs(series, cand, reads, window_from, window_hours, details)
-        o_probs = occupancy_probs(reads, window_from)
         probs = {}
-        for key in sorted(set(g_probs) | set(m_probs) | set(o_probs)):
-            probs[key] = 0.75 * (g_probs.get(key, 0.0) * GAUSS_WEIGHT + m_probs.get(key, 0.0) * (1.0 - GAUSS_WEIGHT)) + 0.25 * o_probs.get(key, 0.0)
+        # The simulation reserves less probability for unseen chart arrivals here.
+        for key in sorted(set(g_probs) | set(m_probs)):
+            probs[key] = g_probs.get(key, 0.0) * GAUSS_WEIGHT + m_probs.get(key, 0.0) * (1.0 - GAUSS_WEIGHT)
         mass = Counter()
         for (gid, _), p in probs.items():
             mass[gid] += p
