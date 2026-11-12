@@ -1,32 +1,32 @@
 # Roblox Up-and-Coming forecast
 
-`main.py` reads chart history from `$MAKEFUN_INPUT_DIR` (default `/input`)
-and writes `$MAKEFUN_OUTPUT_DIR/forecast.json` (default `/output/forecast.json`).
-The output contains probabilities for places 1–10 and a ten-game selection.
-The program uses only the Python standard library and produces deterministic
-output for the same input history.
+Run `main.py` with Python 3. It reads `task.json` and `history.ndjson` from
+`MAKEFUN_INPUT_DIR` (default `/input`) and writes `forecast.json` under
+`MAKEFUN_OUTPUT_DIR` (default `/output`). The JSON contains probabilities for
+chart places 1 through 10 and a list of ten distinct predicted universe IDs.
 
-## Forecast method
+The program uses only the Python standard library, makes no network requests,
+and produces the same output bytes for the same input.
 
-The forecast blends a Gaussian place model and a Monte Carlo rank model,
-then assigns 25% of the final probability to a recency-weighted
-place-occupancy table. The Gaussian and Monte Carlo components contribute
-70% and 30% of the remaining 75%, respectively.
+## How the forecast works
 
-The Gaussian component uses a candidate's latest rank, its player count,
-and recent rank variation to distribute probability over places. The
-Monte Carlo component simulates rank changes in three-hour steps using a
-fixed random seed. Games that age out of the chart lose weight over the
-forecast window when their creation date is available.
+Three probability estimates are blended. A Gaussian place model contributes
+70% of the rank-model portion: it centers each candidate near its latest rank,
+pulls that rank toward a player-count estimate, and widens the distribution
+according to recent rank variation and forecast horizon. A seeded Monte Carlo
+rank simulation contributes the other 30% of that portion, stepping candidate
+strengths forward every three hours. Together these rank models supply 75% of
+the final probability.
 
-The occupancy component draws candidates from the latest chart's top 60
-and the top 30 of each of the last eight reads. For each place it counts
-historical top-ten occupants, halving a read's weight for every 24 hours
-of age. A small pseudocount smooths each candidate's place probability.
-No probability is reserved for unnamed games: held-out windows showed an
-approximately 3.5% rate of previously unseen top-ten occupants.
+The remaining 25% comes from a place-occupancy table. It counts historical
+top-ten occupants by place, with a 24-hour half-life, and smooths the counts
+with a 0.05 prior for each candidate and place. Candidates come from the latest
+read's top 60 and the top 30 of each of the last eight reads. When a game's
+creation date is available, the rank models reduce its weight for the portion
+of the forecast window after it ages out of the chart. No mass is reserved for
+unnamed games.
 
-## Run
+## Run locally
 
 ```sh
 MAKEFUN_INPUT_DIR=input MAKEFUN_OUTPUT_DIR=out python3 main.py
